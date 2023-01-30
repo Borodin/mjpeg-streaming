@@ -1,15 +1,17 @@
 import express from 'express';
 import cp from 'child_process';
+import EventEmitter from 'events';
 
 const app = express();
 
 
-class videoStream {
+class videoStream extends EventEmitter{
     ffmpeg = null;
     retryCount = 0;
     clients = new Set();
 
     constructor(streamUrl) {
+        super();
         this.streamUrl = streamUrl;
         this.createStream(streamUrl);
     }
@@ -29,22 +31,17 @@ class videoStream {
             detached: false
         });
 
-        this.ffmpeg.on('spawn', () => {
-            console.log(`${stream_url}: spawn`);
-        })
-
+        this.ffmpeg.on('spawn', () => {})
         this.ffmpeg.stdout.on('data', data => this.onData(data));
-
         this.ffmpeg.on('exit', code => this.streamExit(code));
     }
 
-    streamExit(code) {
-        console.log(`disconnected from ${this.streamUrl}, waiting to retry`);
-        this.ffmepg = null;
-
+    streamExit() {
         if (this.retryCount < 5) {
             this.retryCount++;
             this.createStream(this.streamUrl);
+        }else{
+            this.emit('lostStream');
         }
     }
 
@@ -66,48 +63,35 @@ class videoStream {
             'Connection': 'close',
             'Content-Type': 'multipart/x-mixed-replace; boundary=frame'
         });
-        console.log('connected');
     }
 
-    removeClient(req, onLast) {
+    removeClient(req) {
         this.clients.delete(req);
-        if (this.clients.size === 0) onLast();
+        if (this.clients.size === 0) {
+            this.emit('leaveAll');
+        }
     }
 
 }
 
-app.get('/', function (req, res) {
-    // send html
-    res.writeHead(200)
-    res.end(`<html><body>
-        <img src="/stream/test" />
-        <img src="/stream/test" />
-        <img src="/stream/test2" />
-        <img src="/stream/test2" />
-        <img src="/stream/test3" />
-        <img src="/stream/test3" />
-    </body></html>`);
-})
-
-
 const videoStreams = new Map();
 
-app.get('/stream/:id', (req, res) => {
+app.get('/stream/:id', (req) => {
     const id = req.params.id;
     if (!videoStreams.has(id)) {
         videoStreams.set(id, new videoStream(`rtmp://***/live/${id}`));
+        videoStreams.on('lostStream', () => videoStreams.delete(id));
+        videoStreams.on('leaveAll', () => videoStreams.delete(id));
     }
     const stream = videoStreams.get(id);
-
     stream.addClient(req);
 
     req.on('close', () => {
-        stream.removeClient(req, () => videoStreams.delete(id));
+        stream.removeClient(req);
     })
 })
 
 app.listen(3000, () => {
-    console.log('Listening on port 3000');
-    console.log('Open http://localhost:3000/ in your browser');
+    console.log('Server is running on port 3000');
 });
 
